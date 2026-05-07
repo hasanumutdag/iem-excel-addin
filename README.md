@@ -69,5 +69,5 @@ Drop a university curriculum PDF in, get classifications written directly into a
 - API key is handled by the Anthropic proxy — no key needed in the code
 - Processes up to 25 PDF pages per run
 - Cost per run: approximately $0.001 (fractions of a cent)
-- Credits expire 1 year from purchase — buy the minimum $5 to start
+- Credits expire 1 year from purchase — buy the minimum $5 to start(anthropic currently gives 5 bucks in credits for free)
 - Set a spending limit in console.anthropic.com to avoid any surprises
