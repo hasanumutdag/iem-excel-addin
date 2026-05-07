@@ -15,21 +15,8 @@ Drop a university curriculum PDF in, get classifications written directly into a
 
 ---
 
-## Deployment (GitHub Pages — free, 5 minutes)
 
-1. **Create a new GitHub repo** — name it `iem-excel-addin` (public)
 
-2. **Upload all files** from this folder to the repo root
-
-3. **Enable GitHub Pages**
-   - Go to repo Settings → Pages
-   - Source: Deploy from branch → main → / (root)
-   - Save. Your URL will be: `https://YOUR-USERNAME.github.io/iem-excel-addin`
-
-4. **Update the manifest**
-   - Open `manifest.xml`
-   - Replace every instance of `YOUR-HOSTING-URL` with your actual GitHub Pages URL
-   - Commit the updated manifest
 
 ---
 
