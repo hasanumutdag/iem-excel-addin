@@ -61,6 +61,16 @@ Drop a university curriculum PDF in, get classifications written directly into a
    - Orange rows = flagged for human review
    - "Validated?" column left empty for the reviewer to fill
 
+Annual Check (comparing year-over-year)
+
+Open the workbook that already has an "AI Review" sheet from the previous year's run
+Tick the Annual check checkbox in the task pane
+Upload the new curriculum PDF and click Analyze & Compare →
+Two sheets are created/updated:
+
+AI Review — fresh classification of the new curriculum
+Changes — a diff showing what changed: added courses, removed courses, and any reclassifications
+
 ---
 
 ## Notes
