@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -63,6 +64,13 @@
 
     .note { font-size: 10px; color: #94a3b8; line-height: 1.5; margin-top: 8px; }
 
+    .toggle-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding: 10px 12px; background: #fff; border: 1.5px solid #e2e8f0; border-radius: 8px; cursor: pointer; }
+    .toggle-row:hover { border-color: #2563eb; background: #f8faff; }
+    .toggle-row.active { border-color: #2563eb; background: #eff6ff; }
+    .toggle-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: #1e3a5f; cursor: pointer; flex-shrink: 0; }
+    .toggle-row .toggle-label { font-size: 12px; font-weight: 600; color: #374151; }
+    .toggle-row .toggle-sub   { font-size: 10px; color: #94a3b8; margin-top: 1px; }
+
     .loading { text-align: center; padding: 24px 0; }
     .loading .spinner { font-size: 28px; display: inline-block; animation: spin 1s linear infinite; }
     .loading p { font-size: 12px; color: #64748b; margin-top: 8px; }
@@ -92,6 +100,14 @@
     <input type="file" id="fileInput" accept=".pdf" style="display:none">
   </div>
 
+  <label class="toggle-row" id="toggleRow">
+    <input type="checkbox" id="compareMode">
+    <div>
+      <div class="toggle-label">📅 Annual check</div>
+      <div class="toggle-sub">Compare against existing "AI Review" sheet</div>
+    </div>
+  </label>
+
   <button class="btn btn-primary" id="analyzeBtn" disabled onclick="analyze()">
     Analyze &amp; Fill Sheet →
   </button>
@@ -101,8 +117,12 @@
 </div>
 
 <script>
-// ── Office init ─────────────────────────────────────────────────
-Office.onReady(function() {});
+// ── Toggle ──────────────────────────────────────────────────────
+document.getElementById('compareMode').addEventListener('change', function() {
+  document.getElementById('toggleRow').classList.toggle('active', this.checked);
+  document.getElementById('analyzeBtn').textContent =
+    this.checked ? 'Analyze & Compare →' : 'Analyze & Fill Sheet →';
+});
 
 // ── PDF.js init ─────────────────────────────────────────────────
 window.pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -251,10 +271,29 @@ Return exactly this structure:
     const parsed = JSON.parse(clean);
 
     setStatus('info', '📊 Writing to Excel sheet...');
+    const compareMode = document.getElementById('compareMode').checked;
+    let oldCourses = null;
+
+    if (compareMode) {
+      setStatus('info', '📂 Reading previous AI Review sheet...');
+      oldCourses = await readExistingReview();
+      if (!oldCourses) {
+        setStatus('info', '⚠️ No existing "AI Review" sheet found — running fresh analysis.');
+      }
+    }
+
     await writeToExcel(parsed);
 
-    setStatus('success',
-      `✅ Done! ${parsed.total_courses} courses classified, ${parsed.flagged_count} flagged. See "AI Review" sheet.`);
+    if (compareMode && oldCourses) {
+      setStatus('info', '🔍 Comparing with previous results...');
+      const diff = compareResults(oldCourses, parsed.courses);
+      await writeChangesSheet(diff, parsed.university);
+      setStatus('success',
+        `✅ Done! ${parsed.total_courses} courses classified. Changes: +${diff.added.length} added, -${diff.removed.length} removed, ~${diff.reclassified.length} reclassified. See "AI Review" and "Changes" sheets.`);
+    } else {
+      setStatus('success',
+        `✅ Done! ${parsed.total_courses} courses classified, ${parsed.flagged_count} flagged. See "AI Review" sheet.`);
+    }
     renderPreview(parsed);
 
   } catch (e) {
@@ -262,6 +301,160 @@ Return exactly this structure:
   } finally {
     document.getElementById('analyzeBtn').disabled = false;
   }
+}
+
+// ── Read existing AI Review sheet ───────────────────────────────
+async function readExistingReview() {
+  try {
+    let courses = null;
+    await Excel.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getItem('AI Review');
+      const range = sheet.getUsedRange();
+      range.load('values');
+      await ctx.sync();
+      const values = range.values;
+      courses = [];
+      // Rows 0=title, 1=summary, 2=header, 3+ = data
+      for (let i = 3; i < values.length; i++) {
+        const row = values[i];
+        if (row[0]) courses.push({
+          name: String(row[0]).trim(),
+          ects: row[1], type: row[2],
+          scope: row[3], area: row[4],
+          confidence: row[5],
+          flag: row[6] === 'YES',
+          flag_reason: row[7]
+        });
+      }
+    });
+    return courses && courses.length > 0 ? courses : null;
+  } catch (_) { return null; }
+}
+
+// ── Compare old vs new courses (exact name match) ───────────────
+function compareResults(oldCourses, newCourses) {
+  const oldMap = new Map(oldCourses.map(c => [c.name.toLowerCase(), c]));
+  const newMap = new Map(newCourses.map(c => [c.name.toLowerCase(), c]));
+  const added = [], removed = [], reclassified = [], unchanged = [];
+  for (const [key, nc] of newMap) {
+    if (!oldMap.has(key)) { added.push(nc); continue; }
+    const oc = oldMap.get(key);
+    if (oc.scope !== nc.scope || oc.area !== nc.area)
+      reclassified.push({ course: nc, oldScope: oc.scope, oldArea: oc.area });
+    else unchanged.push(nc);
+  }
+  for (const [key, oc] of oldMap) {
+    if (!newMap.has(key)) removed.push(oc);
+  }
+  return { added, removed, reclassified, unchanged };
+}
+
+// ── Write Changes sheet ─────────────────────────────────────────
+async function writeChangesSheet(diff, university) {
+  await Excel.run(async (ctx) => {
+    const wb = ctx.workbook;
+    try { wb.worksheets.getItem('Changes').delete(); await ctx.sync(); } catch (_) {}
+    const sheet = wb.worksheets.add('Changes');
+
+    const writeTitle = (range, text, bg) => {
+      range.merge();
+      range.values = [[text]];
+      range.format.font.bold = true;
+      range.format.font.size = 11;
+      range.format.font.color = '#FFFFFF';
+      range.format.fill.color = bg;
+      range.format.rowHeight = 22;
+      range.format.horizontalAlignment = 'Left';
+      range.format.indentLevel = 1;
+    };
+
+    const writeHeader = (range, cols) => {
+      range.values = [cols];
+      range.format.font.bold = true;
+      range.format.font.color = '#FFFFFF';
+      range.format.fill.color = '#1e3a5f';
+      range.format.rowHeight = 20;
+    };
+
+    // Page title
+    const pageTitle = sheet.getRange('A1:G1');
+    pageTitle.merge();
+    pageTitle.values = [[`Curriculum Changes — ${university || 'Unknown'}  ·  ${new Date().toLocaleDateString()}`]];
+    pageTitle.format.font.bold = true;
+    pageTitle.format.font.size = 13;
+    pageTitle.format.font.color = '#FFFFFF';
+    pageTitle.format.fill.color = '#1e3a5f';
+    pageTitle.format.rowHeight = 28;
+    pageTitle.format.horizontalAlignment = 'Center';
+
+    // Summary row
+    const sumR = sheet.getRange('A2:G2');
+    sumR.merge();
+    sumR.values = [[`+${diff.added.length} added  ·  -${diff.removed.length} removed  ·  ~${diff.reclassified.length} reclassified  ·  ${diff.unchanged.length} unchanged`]];
+    sumR.format.font.italic = true;
+    sumR.format.font.size = 10;
+    sumR.format.font.color = '#64748b';
+    sumR.format.fill.color = '#f8fafc';
+    sumR.format.rowHeight = 18;
+
+    let row = 3;
+
+    // ── ADDED ──
+    writeTitle(sheet.getRange(`A${row}:G${row}`), `✅  Added (${diff.added.length} new courses)`, '#166534');
+    row++;
+    writeHeader(sheet.getRange(`A${row}:G${row}`), ['Course Name','ECTS','Type','Scope','Scientific Area','Confidence','Flagged']);
+    row++;
+    if (diff.added.length > 0) {
+      const addData = diff.added.map(c => [c.name, c.ects ?? '', c.type, c.scope, c.area, c.confidence, c.flag ? 'YES' : 'NO']);
+      sheet.getRangeByIndexes(row - 1, 0, addData.length, 7).values = addData;
+      for (let i = 0; i < addData.length; i++) {
+        sheet.getRangeByIndexes(row - 1 + i, 0, 1, 7).format.fill.color = i % 2 === 0 ? '#f0fdf4' : '#ffffff';
+        sheet.getRangeByIndexes(row - 1 + i, 0, 1, 7).format.rowHeight = 15;
+      }
+      row += addData.length;
+    }
+    row++;
+
+    // ── REMOVED ──
+    writeTitle(sheet.getRange(`A${row}:G${row}`), `🗑️  Removed (${diff.removed.length} courses no longer in curriculum)`, '#991b1b');
+    row++;
+    writeHeader(sheet.getRange(`A${row}:G${row}`), ['Course Name','ECTS','Type','Last Scope','Last Area','Last Confidence','']);
+    row++;
+    if (diff.removed.length > 0) {
+      const remData = diff.removed.map(c => [c.name, c.ects ?? '', c.type, c.scope, c.area, c.confidence, '']);
+      sheet.getRangeByIndexes(row - 1, 0, remData.length, 7).values = remData;
+      for (let i = 0; i < remData.length; i++) {
+        sheet.getRangeByIndexes(row - 1 + i, 0, 1, 7).format.fill.color = i % 2 === 0 ? '#fff1f2' : '#ffffff';
+        sheet.getRangeByIndexes(row - 1 + i, 0, 1, 7).format.rowHeight = 15;
+      }
+      row += remData.length;
+    }
+    row++;
+
+    // ── RECLASSIFIED ──
+    writeTitle(sheet.getRange(`A${row}:G${row}`), `🔄  Reclassified (${diff.reclassified.length} courses with changed classification)`, '#92400e');
+    row++;
+    writeHeader(sheet.getRange(`A${row}:G${row}`), ['Course Name','ECTS','Previous Scope','Previous Area','New Scope','New Area','']);
+    row++;
+    if (diff.reclassified.length > 0) {
+      const recData = diff.reclassified.map(r => [r.course.name, r.course.ects ?? '', r.oldScope, r.oldArea, r.course.scope, r.course.area, '']);
+      sheet.getRangeByIndexes(row - 1, 0, recData.length, 7).values = recData;
+      for (let i = 0; i < recData.length; i++) {
+        sheet.getRangeByIndexes(row - 1 + i, 0, 1, 7).format.fill.color = i % 2 === 0 ? '#fffbeb' : '#ffffff';
+        sheet.getRangeByIndexes(row - 1 + i, 0, 1, 7).format.rowHeight = 15;
+      }
+      row += recData.length;
+    }
+
+    // Column widths
+    [44, 6, 28, 28, 28, 28, 10].forEach((w, i) => {
+      sheet.getRange(`${String.fromCharCode(65+i)}:${String.fromCharCode(65+i)}`).format.columnWidth = w * 7;
+    });
+
+    sheet.freezePanes.freezeRows(3);
+    sheet.activate();
+    await ctx.sync();
+  });
 }
 
 // ── Write to Excel ──────────────────────────────────────────────
